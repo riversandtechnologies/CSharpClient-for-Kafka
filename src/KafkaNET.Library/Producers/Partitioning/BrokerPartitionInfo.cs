@@ -203,8 +203,30 @@ namespace Kafka.Client.Producers.Partitioning
 
         private void UpdateInfoInternal(short versionId, int correlationId, string clientId, string topic)
         {
-            Logger.DebugFormat("Will try check if need update. broker partition info for topic {0}", topic);
-            //check if the cache has metadata for this topic
+            Logger.DebugFormat("Check if we need to update the partition info and its metada. Broker partition info for topic {0}", topic);
+            lock (updateLock)
+            {
+                //check if the cache has metadata for this topic
+                if (IsRequireUpdate(topic))
+                {
+                    Logger.InfoFormat("Will update metadata for topic:{0}", topic);
+                    this.UpdateInfo(versionId, correlationId, clientId, topic);
+                    if (!this.topicPartitionInfo.ContainsKey(topic))
+                    {   // We just attempted to update the partition info and we still missing this topic, it is most likely a failed attempt.
+                        throw new KafkaException(string.Format("Failed to fetch topic metadata for topic: {0} ", topic));
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Will determine if the partition info and its metadata requires update.
+        /// </summary>
+        /// <returns>True if the parition info requires update, false otherwise.</returns>
+        /// <remarks>This is unprotected method, it should be called within a lock scope that includes the actual update operation 
+        /// if update is required.</remarks>
+        private bool IsRequireUpdate(string topic)
+        {
             bool needUpdateForNotExists = false;
             bool needUpdateForExpire = false;
             if (!this.topicPartitionInfo.ContainsKey(topic) || this.topicPartitionInfo[topic].Error != ErrorMapping.NoError)
@@ -216,22 +238,11 @@ namespace Kafka.Client.Producers.Partitioning
                 && (DateTime.UtcNow - this.topicPartitionInfoLastUpdateTime[topic]).TotalMilliseconds > this.topicMetaDataRefreshIntervalMS)
             {
                 needUpdateForExpire = true;
-                Logger.InfoFormat("Will update metadata for topic:{0}  Last update time:{1}  Diff:{2} Config:{3} ", topic, this.topicPartitionInfoLastUpdateTime[topic]
+                Logger.InfoFormat("Metadata for topic:{0} requires update. Last update time:{1}  Diff:{2} Config:{3} ", topic, this.topicPartitionInfoLastUpdateTime[topic]
                     , (DateTime.UtcNow - this.topicPartitionInfoLastUpdateTime[topic]).TotalMilliseconds, this.topicMetaDataRefreshIntervalMS);
             }
 
-            if (needUpdateForNotExists || needUpdateForExpire)
-            {
-                Logger.InfoFormat("Will update metadata for topic:{0} since: needUpdateForNotExists: {1}  needUpdateForExpire:{2} ", topic, needUpdateForNotExists, needUpdateForExpire);
-                lock (updateLock)
-                {
-                    this.UpdateInfo(versionId, correlationId, clientId, topic);
-                    if (!this.topicPartitionInfo.ContainsKey(topic))
-                    {
-                        throw new KafkaException(string.Format("Failed to fetch topic metadata for topic: {0} ", topic));
-                    }
-                }
-            }
+            return (needUpdateForNotExists || needUpdateForExpire);
         }
     }
 }
